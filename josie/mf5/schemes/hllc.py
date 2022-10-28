@@ -32,7 +32,7 @@ from josie.scheme.nonconservative import NonConservativeScheme
 from josie.scheme.convective import ConvectiveScheme
 
 from josie.math import Direction
-from josie.mf5.state import Q
+from josie.mf5.state import Q, MF5PhaseFields
 from josie.twofluid.state import PhasePair
 from josie.twofluid.fields import Phases
 
@@ -41,32 +41,27 @@ from .scheme import MF5Scheme
 
 
 class HLLC(ConvectiveScheme, MF5Scheme):
-    def F(self, cells: MeshCellSet, neighs: NeighboursCellSet) -> Q:
+    def intercellFlux(
+        self, Q_L: Q, Q_R: Q, normals: np.ndarray, surfaces: np.ndarray
+    ) -> Q:
 
         """This method implements the HLLC scheme."""
 
-        values: Q = cells.values.view(Q)
-        Q_L, Q_R = values, neighs.values.view(Q)
-
-        FS = np.zeros(values.shape).view(Q)
-        F = np.zeros(values.get_conservative().shape)
-        fields = values.fields
+        FS = np.zeros(Q_L.shape).view(Q)
+        F = np.zeros(Q_L.view(Q).get_conservative().shape)
+        fields = Q.fields
         # We start by computing the velocity of the contact discontinuity
 
         # Get necessary variables :
         rho_L = Q_L[..., [fields.rho]]
         p_L = Q_L[..., [fields.P]]
         UV_L = Q_L[..., [fields.U, fields.V]]
-        Un_L = np.einsum("...kl,...l->...k", UV_L, neighs.normals)[
-            ..., np.newaxis
-        ]
+        Un_L = np.einsum("...kl,...l->...k", UV_L, normals)[..., np.newaxis]
         cF_L = Q_L[..., [fields.cF]]
         rho_R = Q_R[..., [fields.rho]]
         p_R = Q_R[..., [fields.P]]
         UV_R = Q_R[..., [fields.U, fields.V]]
-        Un_R = np.einsum("...kl,...l->...k", UV_R, neighs.normals)[
-            ..., np.newaxis
-        ]
+        Un_R = np.einsum("...kl,...l->...k", UV_R, normals)[..., np.newaxis]
         cF_R = Q_R[..., [fields.cF]]
         # Get the velocity of the left and right shock waves
         sigma_L, sigma_R = self.compute_sigma(Un_L, Un_R, cF_L, cF_R)
@@ -85,10 +80,10 @@ class HLLC(ConvectiveScheme, MF5Scheme):
         Q_star_R = np.zeros(Q_R.shape)
 
         U_star_L = UV_L + np.einsum(
-            "...kl,...l->...kl", (S_star - Un_L), neighs.normals
+            "...kl,...l->...kl", (S_star - Un_L), normals
         )
         U_star_R = UV_R + np.einsum(
-            "...kl,...l->...kl", (S_star - Un_R), neighs.normals
+            "...kl,...l->...kl", (S_star - Un_R), normals
         )
 
         # Get arhos
@@ -143,8 +138,7 @@ class HLLC(ConvectiveScheme, MF5Scheme):
         # Estimate the intermediate pressure
         # Then compute the internal energy
         for phase in Phases:
-            phase_values = values.get_phase(phase)
-            pfields = phase_values.fields
+            pfields = MF5PhaseFields
 
             # Get phase densities
             rho_L = arhos_L[phase] / alphas_L[phase]
@@ -198,19 +192,15 @@ class HLLC(ConvectiveScheme, MF5Scheme):
             Q_star_R.view(Q).set_phase(phase, phase_Q_star_R)
 
         # Get conservative states
-        Qc_L = Q_L.get_conservative()
-        Qc_R = Q_R.get_conservative()
+        Qc_L = Q_L.view(Q).get_conservative()
+        Qc_R = Q_R.view(Q).get_conservative()
         Qc_star_L = Q_star_L.view(Q).get_conservative()
         Qc_star_R = Q_star_R.view(Q).get_conservative()
 
         # All four states are now known, fluxes are then computed
         # This is the flux tensor dot the normal
-        F_L = np.einsum(
-            "...jkl,...l->...jk", self.problem.F(cells), neighs.normals
-        )
-        F_R = np.einsum(
-            "...jkl,...l->...jk", self.problem.F(neighs), neighs.normals
-        )
+        F_L = np.einsum("...jkl,...l->...jk", self.problem.F(Q_L), normals)
+        F_R = np.einsum("...jkl,...l->...jk", self.problem.F(Q_R), normals)
         # Right supersonic flow
         np.copyto(F, F_L, where=(sigma_L >= 0))
 
@@ -277,7 +267,7 @@ class HLLC(ConvectiveScheme, MF5Scheme):
         #    where=((S_star < 0) * (0 <= sigma_R))[..., 0],
         # )
 
-        FS.set_conservative(neighs.surfaces[..., np.newaxis, np.newaxis] * F)
+        FS.set_conservative(surfaces[..., np.newaxis, np.newaxis] * F)
 
         return FS
 

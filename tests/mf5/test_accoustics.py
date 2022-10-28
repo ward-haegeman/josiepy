@@ -8,6 +8,7 @@ from matplotlib.gridspec import GridSpec
 from josie.mf5.eos import StiffenedGasExt as StiffenedGas
 from josie.bc import make_periodic, Direction
 from josie.general.schemes.time import RK2
+from josie.general.schemes.space.limiters import MUSCL_Hancock_no_limiter
 from josie.boundary import Line
 from josie.mesh import Mesh
 from josie.mesh.cell import SimpleCell
@@ -20,7 +21,7 @@ from josie.twofluid.state import PhasePair
 from josie.twofluid.fields import Phases
 
 
-class MF5Scheme(HLLC, HLLCNonCons, RK2):
+class MF5Scheme(HLLC, HLLCNonCons, MUSCL_Hancock_no_limiter, RK2):
     pass
 
 

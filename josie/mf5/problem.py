@@ -49,7 +49,7 @@ class MF5Problem(Problem):
     def __init__(self, eos: TwoPhaseEOS):
         self.eos = eos
 
-    def F(self, cells: Union[MeshCellSet, CellSet]) -> np.ndarray:
+    def F(self, values: Q) -> np.ndarray:
         r""" This returns the tensor representing the flux for a two-phase model
 
         A general problem can be written in a compact way:
@@ -95,7 +95,6 @@ class MF5Problem(Problem):
                 \end{bmatrix}
         """
 
-        values = cells.values.view(Q)
         num_cells_x, num_cells_y, num_dofs, _ = values.shape
 
         # Flux tensor
@@ -108,7 +107,7 @@ class MF5Problem(Problem):
                 MAX_DIMENSIONALITY,
             )
         )
-        fields = values.fields
+        fields = Q.fields
 
         alpha1 = values[..., fields.alpha1]
         rhoU = values[..., fields.rhoU]
@@ -153,7 +152,7 @@ class MF5Problem(Problem):
 
         return F
 
-    def B(self, cells: Union[CellSet, MeshCellSet]):
+    def B(self, values: Q):
         r""" This returns the tensor that pre-multiplies the non-conservative
         term of the problem.
 
@@ -192,7 +191,6 @@ class MF5Problem(Problem):
             A :class:`MeshCellSet` that contains the cell data
         """
 
-        values = cells.values.view(Q)
         num_cells_x, num_cells_y, num_dofs, num_fields = values.shape
         fields = Q.fields
 

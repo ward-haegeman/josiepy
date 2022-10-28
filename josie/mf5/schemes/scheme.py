@@ -35,7 +35,7 @@ from josie.scheme import Scheme
 from josie.mf5.eos import TwoPhaseEOS
 from josie.mf5.eos import EOSExt as EOS
 from josie.mf5.problem import MF5Problem
-from josie.mf5.state import Q
+from josie.mf5.state import Q, MF5PhaseFields
 from josie.twofluid.state import PhasePair
 from josie.twofluid.fields import Phases
 
@@ -163,7 +163,7 @@ class MF5Scheme(Scheme):
         # next compute the densities
         aF2_star = 0
         for phase in Phases:
-            pvalues = values.get_phase(phase)
+            pvalues = values.view(Q).get_phase(phase)
             pfields = pvalues.fields
             gamma = eosPair[phase].gamma
             p0 = eosPair[phase].p0
@@ -182,7 +182,7 @@ class MF5Scheme(Scheme):
             pvalues[..., pfields.T] = T_star
             pvalues[..., pfields.c] = c_star
 
-            values.set_phase(phase, pvalues)
+            values.view(Q).set_phase(phase, pvalues)
             aF2_star += pvalues[..., pfields.arho] * c_star ** 2
 
         values[..., fields.P] = p_star
@@ -324,8 +324,8 @@ class MF5Scheme(Scheme):
         aF2 = 0
         P = 0
         for phase in Phases:
-            phase_values = values.get_phase(phase)
-            pfields = phase_values.fields
+            phase_values = values.view(Q).get_phase(phase)
+            pfields = MF5PhaseFields
 
             alpha = alphas[phase]
             rho = rhos[phase]
@@ -342,19 +342,18 @@ class MF5Scheme(Scheme):
             phase_values[..., pfields.T] = T
             phase_values[..., pfields.c] = c
 
-            values.set_phase(phase, phase_values)
+            values.view(Q).set_phase(phase, phase_values)
 
         rho = arho1 + arho2
         values[..., fields.cF] = np.sqrt(aF2 / rho)
         values[..., fields.P] = P
 
-    def post_step(self, cells: MeshCellSet):
+    def post_step(self, values: Q):
         """During the step we update the conservative values. After the
         step we update the non-conservative variables. This method updates
         the values of the non-conservative (auxiliary) variables using the
         :class:`~.EOS`
         """
-        values: Q = cells.values.view(Q)
 
         self.update_auxiliary_variables(values)
 
