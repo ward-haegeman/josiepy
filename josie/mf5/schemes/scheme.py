@@ -44,9 +44,11 @@ class MF5Scheme(Scheme):
     """A base class for a twophase scheme MF5"""
 
     problem: MF5Problem
+    isSG: bool
 
-    def __init__(self, eos: TwoPhaseEOS):
+    def __init__(self, eos: TwoPhaseEOS, isSG: bool):
         super().__init__(MF5Problem(eos))
+        self.isSG = isSG
 
     def CFL(
         self,
@@ -183,78 +185,164 @@ class MF5Scheme(Scheme):
             pvalues[..., pfields.c] = c_star
 
             values.view(Q).set_phase(phase, pvalues)
-            aF2_star += pvalues[..., pfields.arho] * c_star ** 2
+            aF2_star += pvalues[..., pfields.arho] * c_star**2
 
         values[..., fields.P] = p_star
         values[..., fields.cF] = np.sqrt(
             np.divide(aF2_star, values[..., fields.rho])
         )
 
-    # def relax_process(self, values: Q):
-    #     fields = Q.fields
+    def relax_process(self, values: Q, tol=1e-6, MaxIter=100, local=False):
+        fields = Q.fields
 
-    #     eosPair = PhasePair(
-    #         self.problem.eos[Phases.PHASE1], self.problem.eos[Phases.PHASE2]
-    #     )
+        eosPair = PhasePair(
+            self.problem.eos[Phases.PHASE1], self.problem.eos[Phases.PHASE2]
+        )
 
-    #     # Get values that will be updates
-    #     alpha1 = values[..., fields.alpha1]
-    #     alpha2 = 1 - alpha1
-    #     e1 = values[..., fields.arhoe1] / values[..., fields.arho1]
-    #     e2 = values[..., fields.arhoe2] / values[..., fields.arho2]
+        # Get fields over which Newton iterates
+        alpha1 = values[..., fields.alpha1]
+        alpha2 = 1 - alpha1
+        e1 = values[..., fields.arhoe1] / values[..., fields.arho1]
+        e2 = values[..., fields.arhoe2] / values[..., fields.arho2]
 
-    #     # Get values necessary to compute variations
-    #     rho1 = values[..., fields.arho1] / alpha1
-    #     rho2 = values[..., fields.arho2] / alpha2
-    #     p1 = values[..., fields.p1]
-    #     p2 = values[..., fields.p2]
-    #     P = values[..., fields.P]
+        # Get values necessary to compute increments
+        arho1 = values[..., fields.arho1]
+        rho1 = arho1 / alpha1
+        arho2 = values[..., fields.arho2]
+        rho2 = arho2 / alpha2
+        p1 = values[..., fields.p1]
+        p2 = values[..., fields.p2]
+        P = values[..., fields.P]
+        # print(
+        #    "Entering relaxation process, nanmin p1 = ",
+        #    np.nanmin(p1),
+        # )
+        N_iter = 0
+        while (
+            np.nanmax(np.abs(p1 - p2) / p1, axis=(0, 1)) > tol
+            and N_iter < MaxIter
+        ):
+            N_iter += 1
 
-    #     # Get EOS derivatives
-    #     dp_drho_1 = eosPair[Phases.PHASE1].dp_drho(rho1, e1)
-    #     dp_drho_2 = eosPair[Phases.PHASE2].dp_drho(rho2, e2)
+            # Get EOS derivatives
+            dp_drho_1 = eosPair[Phases.PHASE1].dp_drho(rho1, e1)
+            dp_drho_2 = eosPair[Phases.PHASE2].dp_drho(rho2, e2)
 
-    #     dp_de_1 = eosPair[Phases.PHASE1].dp_de(rho1, e1)
-    #     dp_de_2 = eosPair[Phases.PHASE2].dp_de(rho2, e2)
+            dp_de_1 = eosPair[Phases.PHASE1].dp_de(rho1, e1)
+            dp_de_2 = eosPair[Phases.PHASE2].dp_de(rho2, e2)
 
-    #     # Compute variations
-    #     de_da_1 = -P / (alpha1 * rho1)
-    #     de_da_2 = -P / (alpha2 * rho2)
+            # Compute variations
+            de_da_1 = -P / (alpha1 * rho1)
+            de_da_2 = -P / (alpha2 * rho2)
 
-    #     drho_da_1 = -rho1 / alpha1
-    #     drho_da_2 = -rho2 / alpha2
+            drho_da_1 = -rho1 / alpha1
+            drho_da_2 = -rho2 / alpha2
 
-    #     dp_da_1 = dp_drho_1 * drho_da_1 + dp_de_1 * de_da_1
-    #     dp_da_2 = dp_drho_2 * drho_da_2 + dp_de_2 * de_da_2
+            dp_da_1 = dp_drho_1 * drho_da_1 + dp_de_1 * de_da_1
+            dp_da_2 = dp_drho_2 * drho_da_2 + dp_de_2 * de_da_2
 
-    #     dalpha1 = (p2 - p1) / (dp_da_1 + dp_da_2)
-    #     dalpha2 = -dalpha1
+            # Compute increments
+            dalpha1 = (p2 - p1) / (dp_da_1 + dp_da_2)
+            dalpha2 = -dalpha1
 
-    #     de1 = de_da_1 * dalpha1
-    #     de2 = de_da_2 * dalpha2
+            de1 = de_da_1 * dalpha1
+            de2 = de_da_2 * dalpha2
 
-    #     # Update quantities
-    #     alpha1 += dalpha1
-    #     alpha2 = 1.0 - alpha1
-    #     e1 += de1
-    #     e2 += de2
+            # Update quantities
+            alpha1 += dalpha1
+            alpha2 = 1.0 - alpha1
+            e1 += de1
+            e2 += de2
 
-    #     # Update quantities necessary for the variations
-    #     p1 = eosPair[Phases.PHASE1].p(rho1, e1)
-    #     p2 = eosPair[Phases.PHASE2].p(rho2, e2)
-    #     P = alpha1 * p1 + alpha2 * p2
+            # Update quantities necessary for the variations (arho_k stays fixed)
+            rho1 = arho1 / alpha1
+            rho2 = arho2 / alpha2
+            p1 = eosPair[Phases.PHASE1].p(rho1, e1)
+            p2 = eosPair[Phases.PHASE2].p(rho2, e2)
+            P = alpha1 * p1 + alpha2 * p2
 
-    #     # Update state vector
-    #     values[..., fields.alpha1] = alpha1
-    #     values[..., fields.alpha2] = alpha2
-    #     values[..., fields.arhoe1] = values[..., fields.arho1] * e1
-    #     values[..., fields.arhoe2] = values[..., fields.arho2] * e2
-    #     values[..., fields.p1] = p1
-    #     values[..., fields.p2] = p2
-    #     values[..., fields.P] = P
+        # After iteration process, update state vector
+        values[..., fields.alpha1] = alpha1
+        values[..., fields.alpha2] = alpha2
+        values[..., fields.arhoe1] = values[..., fields.arho1] * e1
+        values[..., fields.arhoe2] = values[..., fields.arho2] * e2
+        values[..., fields.p1] = p1
+        values[..., fields.p2] = p2
+        values[..., fields.P] = P
+        # Also update auxiliary fields
+        T1 = eosPair[Phases.PHASE1].T(e1, rho1)
+        T2 = eosPair[Phases.PHASE2].T(e2, rho2)
+        c1 = eosPair[Phases.PHASE1].sound_velocity(rho1, p1)
+        c2 = eosPair[Phases.PHASE2].sound_velocity(rho2, p2)
+        values[..., fields.T1] = T1
+        values[..., fields.T2] = T2
+        values[..., fields.c1] = c1
+        values[..., fields.c2] = c2
+        values[..., fields.cF] = np.sqrt(
+            np.divide(arho1 * c1**2 + arho2 * c2**2, arho1 + arho2)
+        )
+        print(
+            "Ended relaxation with nanmax |p1-p2|/p1 = ",
+            np.nanmax(
+                np.abs(values[..., fields.p1] - values[..., fields.p2])
+                / values[..., fields.p1]
+            ),
+            f" after {N_iter} iterations.",
+        )
+
+    def SG_pressure_correction_process(self, values: Q):
+        fields = Q.fields
+
+        eosPair = PhasePair(
+            self.problem.eos[Phases.PHASE1], self.problem.eos[Phases.PHASE2]
+        )
+        # Get fields required to compute the new pressure
+        rhoE = values[..., fields.rhoE]
+        rhoU = values[..., fields.rhoU]
+        U = values[..., fields.U]
+        alpha1 = values[..., fields.alpha1]
+        gamma1 = eosPair[Phases.PHASE1].gamma
+        Pinf1 = eosPair[Phases.PHASE1].p0
+        alpha2 = values[..., fields.alpha2]
+        gamma2 = eosPair[Phases.PHASE2].gamma
+        Pinf2 = eosPair[Phases.PHASE2].p0
+
+        num = (rhoE - 0.5 * rhoU * U) - (
+            alpha1 * gamma1 * Pinf1 / (gamma1 - 1)
+            + alpha2 * gamma2 * Pinf2 / (gamma2 - 1)
+        )
+        den = alpha1 / (gamma1 - 1) + alpha2 / (gamma2 - 1)
+        p_corr = np.divide(num, den)
+        # Update all thermodynamic variables
+        aF2 = 0
+        for phase in Phases:
+            phase_values = values.view(Q).get_phase(phase)
+            pfields = MF5PhaseFields
+            rho_k = (
+                phase_values[..., pfields.arho]
+                / phase_values[..., pfields.alpha]
+            )
+            e_k = eosPair[phase].rhoe(rho_k, p_corr) / rho_k
+            T_k = eosPair[phase].T(e_k, p_corr)
+            c_k = eosPair[phase].sound_velocity(rho_k, p_corr)
+            aF2 += phase_values[..., pfields.arho] * c_k**2
+            phase_values[..., pfields.arhoe] = (
+                phase_values[..., pfields.arho] * e_k
+            )
+            phase_values[..., pfields.p] = p_corr
+            phase_values[..., pfields.T] = T_k
+            phase_values[..., pfields.c] = c_k
+            values.view(Q).set_phase(phase, phase_values)
+
+        values[..., fields.cF] = np.sqrt(aF2 / values[..., fields.rho])
+        values[..., fields.P] = p_corr
 
     @staticmethod
     def corr_process(p, rhoe_0, arhos, rhos, eosPair) -> np.ndarray:
+        """
+        Pressure correction after the relaxation process.
+        Computes a new pressure based on the conservation of the total energy.
+        """
         denum = np.zeros(p.shape)
         dp = rhoe_0
 
@@ -271,6 +359,11 @@ class MF5Scheme(Scheme):
 
     @staticmethod
     def p_star_process(p_star, p, rho_star, rho, eos: EOS) -> np.ndarray:
+        """
+        Allows to compute the pressure in the star regions of the HLLC
+
+        HLLC : 4 constant states q_L, q_L*, q_R*, q_R
+        """
         dp = (
             rho * eos.rhoe(rho_star, p_star)
             - rho_star * eos.rhoe(rho, p)
@@ -289,6 +382,7 @@ class MF5Scheme(Scheme):
         Here, all auxiliary variables are recomputed (updated)
         using the conservative variables
         """
+
         fields = Q.fields
 
         # Pair the EOS
@@ -327,24 +421,23 @@ class MF5Scheme(Scheme):
             phase_values = values.view(Q).get_phase(phase)
             pfields = MF5PhaseFields
 
-            alpha = alphas[phase]
-            rho = rhos[phase]
-            e = es[phase]
-            p = eosPair[phase].p(rho, e)
-            c = eosPair[phase].sound_velocity(rho, p)
+            alpha_k = alphas[phase]
+            rho_k = rhos[phase]
+            e_k = es[phase]
+            p_k = eosPair[phase].p(rho_k, e_k)
+            c_k = eosPair[phase].sound_velocity(rho_k, p_k)
 
-            aF2 += alpha * rho * c ** 2
-            P += alpha * p
+            aF2 += alpha_k * rho_k * c_k**2
+            P += alpha_k * p_k
 
-            T = eosPair[phase].T(e, p)
+            T_k = eosPair[phase].T(e_k, p_k)
 
-            phase_values[..., pfields.p] = p
-            phase_values[..., pfields.T] = T
-            phase_values[..., pfields.c] = c
+            phase_values[..., pfields.p] = p_k
+            phase_values[..., pfields.T] = T_k
+            phase_values[..., pfields.c] = c_k
 
             values.view(Q).set_phase(phase, phase_values)
 
-        rho = arho1 + arho2
         values[..., fields.cF] = np.sqrt(aF2 / rho)
         values[..., fields.P] = P
 
@@ -356,54 +449,6 @@ class MF5Scheme(Scheme):
         """
 
         self.update_auxiliary_variables(values)
-
-        # Pressure relaxation
-        # Newton's algorithm
-        # N_max_iter = 1000
-        # N_iter = 0
-        # p1 = values[..., fields.p1]
-        # p2 = values[..., fields.p2]
-        # while np.amax(np.abs(p1 - p2) / p1, axis=(0, 1)) >
-        # 1e-7 and N_iter < N_max_iter:
-        #    self.relax_process(values)
-        #    p1 = values[..., fields.p1]
-        #    p2 = values[..., fields.p2]
-        #    N_iter += 1
-        # print(N_iter)
-        # self.update_auxiliary_variables(values)
-
-        self.SG_relax_process(values)
-
-        # # Energy correction (p1=p2)
-        # rhos = PhasePair(rho1, rho2)
-        # rhoe_0 = values[..., [values.fields.rhoe]]
-        # dp = p1
-        # while np.amax(np.abs(dp) / p1, axis=(0, 1)) > 1e-6:
-        #     dp = self.corr_process(p1, rhoe_0, arhos, rhos, eosPair)
-        #     p1 += dp
-
-        # Update equilibrium for each phase
-        # alphas = PhasePair(alpha1, alpha2)
-        # for phase in Phases:
-        #     phase_values = values.get_phase(phase)
-        #     pfields = phase_values.fields
-
-        #     alpha = alphas[phase]
-        #     rhoe = eosPair[phase].rhoe(rhos[phase], p1)
-        #     c = eosPair[phase].sound_velocity(rhos[phase], p1)
-
-        #     aF2 = eosPair[phase].dp_drho(rho, rhoe / rhos[phase])
-
-        #     aF += arhos[phase] / values[..., [values.fields.rho]] * aF2
-
-        #     T = eosPair[phase].T(rhoe / rhos[phase], p1)
-
-        #     phase_values[..., [pfields.alpha]] = alpha
-        #     phase_values[..., [pfields.aF]] = np.sqrt(aF2)
-        #     phase_values[..., [pfields.arhoe]] = alpha * rhoe
-        #     phase_values[..., [pfields.p]] = p1
-        #     phase_values[..., [pfields.c]] = c
-        #     phase_values[..., [pfields.T]] = T
-        #     values.set_phase(phase, phase_values)
-
-        # values[..., [fields.aF]] = np.sqrt(aF)
+        self.relax_process(values, tol=1e-10, MaxIter=50, local=False)
+        # self.SG_pressure_correction_process(values)
+        # self.SG_relax_process(values)

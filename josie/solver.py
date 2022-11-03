@@ -26,6 +26,8 @@
 # official policies, either expressed or implied, of Ruben Di Battista.
 from __future__ import annotations
 
+import numpy as np
+
 
 from typing import (
     Callable,
