@@ -92,6 +92,7 @@ def mesh(boundaries):
 
     mesh = Mesh(left, bottom, right, top, SimpleCell)
     mesh.interpolate(150, 50)
+    # insert code here
     mesh.generate()
 
     yield mesh
