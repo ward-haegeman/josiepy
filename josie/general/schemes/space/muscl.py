@@ -4,18 +4,14 @@
 
 import numpy as np
 
-from josie.mesh.cellset import MeshCellSet, NeighboursCellSet
+from josie.mesh.cellset import MeshCellSet, NeighboursCellSet, MUSCLMeshCellSet
 
 from josie.scheme.convective import ConvectiveScheme
 
 from josie.mesh.cellset import DimensionPair
 
-from josie.fluid.state import ConsState
-
 
 class MUSCL(ConvectiveScheme):
-    _values: ConsState
-
     slopes: np.ndarray
 
     # Parameter for limiters
@@ -30,11 +26,15 @@ class MUSCL(ConvectiveScheme):
                 break
             dir_L = dim.value[0].value
             dir_R = dim.value[1].value
-            neigh_L = cells.neighbours[dir_L]
-            neigh_R = cells.neighbours[dir_R]
+            neigh_L = self.cells.neighbours[dir_L]
+            neigh_R = self.cells.neighbours[dir_R]
 
+            state_cls = cells._values.__class__
             slope = self.limiter(
-                cells.values - neigh_L.values, neigh_R.values - cells.values
+                self.cells.values.view(state_cls).get_primitive()  # type: ignore
+                - neigh_L.values.view(state_cls).get_primitive(),  # type: ignore
+                neigh_R.values.view(state_cls).get_primitive()  # type: ignore
+                - self.cells.values.view(state_cls).get_primitive(),  # type: ignore
             )
 
             self.slopes[..., dir_R] = slope
@@ -56,9 +56,22 @@ class MUSCL(ConvectiveScheme):
     def linear_extrapolation(self, cells: MeshCellSet):
         # Compute linear extrapolated values at each face
         for direction in range(2**cells.dimensionality):
-            self.values_face.values[..., direction] = (
-                cells.values + 0.5 * self.slopes[..., direction]
+            state_cls = cells._values.__class__
+
+            self.cells.values_face[
+                ...,
+                [direction],
+                [state_cls.prim_state._subset_fields_map],  # type: ignore
+            ] = (
+                self.cells.values.view(state_cls).get_primitive()  # type: ignore
+                + 0.5 * self.slopes[..., direction]
             )
+
+    def apply_fluxes(self, cells: MeshCellSet, dt: float):
+        mcells = MUSCLMeshCellSet(cells)
+        mcells.values -= np.einsum(  # type: ignore
+            "...kl,...->...kl", self._fluxes, dt / cells.volumes
+        )
 
     def F(self, cells: MeshCellSet, neighs: NeighboursCellSet):
         # Solve the Riemann problem to compute the intercell flux
@@ -67,9 +80,8 @@ class MUSCL(ConvectiveScheme):
 
         direction = neighs.direction
         oppDirection = direction + 1 if direction % 2 == 0 else direction - 1
-        Q_L = self.values_face.values[..., direction]
-        Q_R = self.values_face.neighbours[direction].values[..., oppDirection]
-
+        Q_L = self.cells.values_face[..., [direction], :]
+        Q_R = self.cells.neighbours[direction].values_face[..., [oppDirection], :]
         return self.intercellFlux(
             Q_L,
             Q_R,
@@ -84,27 +96,24 @@ class MUSCL(ConvectiveScheme):
 
         super().post_init(cells)
 
-        self.values_face = cells.copy()
+        self.cells = MUSCLMeshCellSet(cells)
 
-        self.slopes = np.empty(cells.values.shape + (2**cells.dimensionality,)).view(
-            cells._values.__class__
-        )
-
-        self.values_face._values = np.empty(
-            cells._values.shape + (2**cells.dimensionality,)
+        state_cls = cells._values.__class__
+        self.slopes = np.empty(
+            self.cells.values.view(state_cls).get_primitive().shape  # type: ignore
+            + (2**cells.dimensionality,)
         ).view(cells._values.__class__)
-
-        self.values_face.create_neighbours()
 
     def pre_accumulate(self, cells: MeshCellSet, dt: float, t: float):
         super().pre_accumulate(cells, dt, t)
 
         self.slopes.fill(0)
+        self.cells = MUSCLMeshCellSet(cells)
 
         # Initialize state values at each face with the state value
         # of the cell
         for dir in range(2**cells.dimensionality):
-            self.values_face._values[..., dir] = cells._values.copy()
+            self.cells._values_face[..., [dir], :] = self.cells._values.copy()
 
         # Compute the slope for each direction according to the
         # chosen limiter
@@ -121,7 +130,7 @@ class MUSCL(ConvectiveScheme):
 
         # Update the auxiliary components at each face
         for dir in range(2**cells.dimensionality):
-            self.post_extrapolation(self.values_face._values[..., dir])
+            self.post_extrapolation(self.cells.values_face[..., dir, :])
 
 
 class MUSCL_Hancock(MUSCL):
@@ -144,33 +153,43 @@ class MUSCL_Hancock(MUSCL):
                 break
             dir_L = dim.value[0].value
             dir_R = dim.value[1].value
-            neigh_L = cells.neighbours[dir_L]
-            neigh_R = cells.neighbours[dir_R]
 
-            n_L = neigh_L.normals
-            n_R = neigh_R.normals
+            Q_L = self.cells.values_face[..., [dir_L], :]
+            Q_R = self.cells.values_face[..., [dir_R], :]
+            F_L = np.einsum(
+                "...mkl,...l->...mk",
+                self.problem.F(Q_L),
+                cells.neighbours[dir_L].normals,
+            )
+            F_R = np.einsum(
+                "...mkl,...l->...mk",
+                self.problem.F(Q_R),
+                cells.neighbours[dir_R].normals,
+            )
 
-            Q_L = self.values_face.values[..., dir_L]
-            Q_R = self.values_face.values[..., dir_R]
-
-            F_L = np.einsum("...mkl,...l->...mk", self.problem.F(Q_L), n_L)
-            F_R = np.einsum("...mkl,...l->...mk", self.problem.F(Q_R), n_R)
-
-            state_cls = cells._values.__class__
-            Q_L.view(state_cls).set_conservative(  # type: ignore
-                Q_L.view(state_cls).get_conservative()  # type: ignore
-                - 0.5
+            cons_states = cells._values.__class__.cons_state  # type: ignore
+            cons_fields = cons_states._subset_fields_map  # type: ignore
+            # BUG: the use of the brackts slice [dir_K] [cons_fields] is not
+            # advised here and does not update the values_face
+            self.cells.values_face[..., [dir_L], [cons_fields]] -= (  # type: ignore
+                0.5
                 * dt
-                / cells.volumes[..., np.newaxis, np.newaxis]
+                / cells.volumes[
+                    ...,
+                    np.newaxis,
+                    np.newaxis,
+                ]
                 * cells.surfaces[..., np.newaxis, [dir_L]]
                 * (F_L + F_R)
             )
-
-            Q_R.view(state_cls).set_conservative(  # type: ignore
-                Q_R.view(state_cls).get_conservative()  # type: ignore
-                - 0.5
+            self.cells.values_face[..., [dir_R], [cons_fields]] -= (  # type: ignore
+                0.5
                 * dt
-                / cells.volumes[..., np.newaxis, np.newaxis]
+                / cells.volumes[
+                    ...,
+                    np.newaxis,
+                    np.newaxis,
+                ]
                 * cells.surfaces[..., np.newaxis, [dir_R]]
                 * (F_L + F_R)
             )
@@ -184,4 +203,4 @@ class MUSCL_Hancock(MUSCL):
 
         # Update the auxiliary components at each face
         for dir in range(2**cells.dimensionality):
-            self.post_extrapolation(self.values_face._values[..., dir])
+            self.post_extrapolation(self.cells.values_face[..., dir, :])

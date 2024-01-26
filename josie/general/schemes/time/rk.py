@@ -138,11 +138,7 @@ class RK(TimeScheme):
 
         super().post_init(cells)
 
-        nx, ny, num_dofs, num_fields = cells.values.shape
-
-        self._ks: np.ndarray = np.empty(
-            (nx, ny, num_dofs, num_fields, self.num_steps - 1)
-        )
+        self._ks: np.ndarray = np.empty(self._fluxes.shape + (self.num_steps - 1,))
         self.step_cells = cells.copy()
 
     def pre_step(self, cells: MeshCellSet, dt: float):
@@ -180,9 +176,12 @@ class RK(TimeScheme):
             * np.einsum("k,...k->...", a_s, self._ks[..., :step])
             / mesh.cells.volumes[..., np.newaxis, np.newaxis]
         )
+        self.auxilliaryVariableUpdate(self.step_cells.values[..., 0, :])
         self.step_cells.update_ghosts(mesh.boundaries, t)
 
         self.pre_accumulate(self.step_cells, dt, t)
+
+        self.step_cells.update_ghosts(mesh.boundaries, t)
 
         for neighs in self.step_cells.neighbours:
             self.accumulate(self.step_cells, neighs, t)
@@ -253,3 +252,42 @@ class RK2(RK2Alpha):
 
     def __init__(self, problem: Problem):
         super().__init__(problem, 2 / 3)
+
+
+class RK2_relax(TimeScheme):
+    def step(self, mesh: Mesh, dt: float, t: float):
+        # Compute q1
+        q = mesh.cells.copy()
+        self._fluxes.fill(0)
+        self.pre_accumulate(q, dt, t)
+        q.update_ghosts(mesh.boundaries, t)
+
+        for neighs in q.neighbours:
+            self.accumulate(q, neighs, t)
+
+        q.values[..., [0], :] -= (  # type: ignore
+            dt / mesh.cells.volumes[..., np.newaxis, np.newaxis]
+        ) * self._fluxes
+
+        # q1 -> q1rel
+        # TODO: Create a RelaxScheme class to account for relaxation processes
+        self.relaxation(q.values[..., 0, :])  # type: ignore
+        self.auxilliaryVariableUpdate(q.values[..., 0, :])
+        q.update_ghosts(mesh.boundaries, t)
+
+        # Compute q2 fluxes
+        self._fluxes.fill(0)
+        self.pre_accumulate(q, dt, t)
+        q.update_ghosts(mesh.boundaries, t)
+
+        for neighs in q.neighbours:
+            self.accumulate(q, neighs, t)
+
+        self._fluxes = (
+            1
+            / 2
+            * mesh.cells.volumes[..., np.newaxis, np.newaxis]
+            / dt
+            * (mesh.cells.values[..., [0], :] - q.values[..., [0], :])
+            + 1 / 2 * self._fluxes
+        )

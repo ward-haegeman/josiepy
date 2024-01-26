@@ -13,17 +13,17 @@ import numpy as np
 
 from josie.boundary import Line
 from josie.mesh import Mesh
-from josie.mesh.cell import SimpleCell
+from josie.mesh.cell import MUSCLCell
 from josie.mesh.cellset import MeshCellSet
 from josie.FourEq.solver import FourEqSolver
 from josie.FourEq.state import Q
 from josie.FourEq.eos import TwoPhaseEOS, LinearizedGas
 
 from josie.FourEq.exact import Exact
-from josie.general.schemes.space import MUSCL_Hancock
+from josie.general.schemes.space import MUSCL
 from josie.general.schemes.space.limiters import MinMod
 
-from josie.general.schemes.time.euler import ExplicitEuler
+from josie.general.schemes.time.rk import RK2_relax
 from josie.bc import make_periodic, Direction
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -35,7 +35,7 @@ def relative_error(a, b):
     return np.abs(a - b)
 
 
-class FourEqScheme(MUSCL_Hancock, MinMod, Exact, ExplicitEuler):
+class FourEqScheme(MUSCL, MinMod, Exact, RK2_relax):
     pass
 
 
@@ -53,7 +53,7 @@ def test_bubble(plot, request):
     left, right = make_periodic(left, right, Direction.X)
     bottom, top = make_periodic(bottom, top, Direction.Y)
 
-    mesh = Mesh(left, bottom, right, top, SimpleCell)
+    mesh = Mesh(left, bottom, right, top, MUSCLCell)
     mesh.interpolate(100, 100)
     mesh.generate()
 

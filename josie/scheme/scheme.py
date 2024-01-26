@@ -163,6 +163,13 @@ class Scheme(abc.ABC):
 
         pass
 
+    def apply_fluxes(self, cells: MeshCellSet, dt: float):
+        r"""Apply/sum up the fluxes in the current state to compute the updated state"""
+
+        cells.values = cells.values - np.einsum(
+            "...kl,...->...kl", self._fluxes, dt / cells.volumes
+        )
+
     def update(self, mesh: Mesh, dt: float, t: float):
         r"""This method implements the time step update. It accumulates all the
         numerical fluxes using the :meth:`Scheme.step` method (possibly in
@@ -196,13 +203,10 @@ class Scheme(abc.ABC):
         # scheme). This modifies self._fluxes in-place
         self.step(mesh, dt, t)
 
-        # Update the cell values
-        cells.values = cells.values - (
-            self._fluxes * dt / cells.volumes[..., np.newaxis, np.newaxis]
-        )
+        self.apply_fluxes(cells, dt)
 
         # Let's put here an handy post step if needed after the values update
-        self.post_step(cells.values)
+        self.post_step(cells.values[..., 0, :])
 
         # Keep ghost cells updated
         mesh.update_ghosts(t)
@@ -225,7 +229,7 @@ class Scheme(abc.ABC):
         # equations without the auxiliary states
 
         # Initialize the datastructure containing the fluxes
-        self._fluxes: State = np.empty_like(cells.values)
+        self._fluxes: State = np.empty_like(cells.values[..., [0], :]).view(State)
 
     def pre_step(self, cells: MeshCellSet, dt: float):
         """
